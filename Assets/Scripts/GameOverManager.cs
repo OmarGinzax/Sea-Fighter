@@ -29,11 +29,17 @@ public class GameOverManager : MonoBehaviour
     [SerializeField] private RectTransform continueBtnRect;
     [SerializeField] private Image mainMenuBtnImage;
     [SerializeField] private Image continueBtnImage;
+    [SerializeField] private Button mainMenuBtn;
+    [SerializeField] private Button continueBtn;
     [SerializeField] private TextMeshProUGUI continueBtnText;
-    [SerializeField] private float selectedScale = 1.2f;
-    [SerializeField] private float normalScale = 1.0f;
+    [SerializeField] private TextMeshProUGUI mainMenuBtnText;
+    [Tooltip("Multiplier applied to button's initial scale when selected or clicked")]
+    [SerializeField] private float selectedScaleMultiplier = 1.15f;
     [SerializeField] private Color pressedColor = new(0.5f, 0.5f, 0.5f, 1f);
     [SerializeField] private float loadDelay = 0.5f;
+
+    private Vector3 mainMenuInitialScale = Vector3.one;
+    private Vector3 continueInitialScale = Vector3.one;
 
     [Header("Next Level Settings")]
     [SerializeField] private string nextSceneName;
@@ -64,8 +70,9 @@ public class GameOverManager : MonoBehaviour
     [SerializeField] private bool isGameFinished = false;
     [SerializeField] private bool isGameStarted = false;
     private bool isTransitioning = false;
+    private bool isWin = false;
 
-    private int selectedGameOverIndex = 1; // 0: Main Menu, 1: Continue
+    private int selectedGameOverIndex = -1; // -1: None, 0: Main Menu, 1: Continue
 
     public static GameOverManager Instance { get; private set; }
     public bool IsGameFinished => isGameFinished;
@@ -78,12 +85,28 @@ public class GameOverManager : MonoBehaviour
         if (Instance == null) Instance = this;
         else Destroy(gameObject);
 
+        if (mainMenuBtnRect != null) mainMenuInitialScale = mainMenuBtnRect.localScale;
+        if (continueBtnRect != null) continueInitialScale = continueBtnRect.localScale;
+
         if (gameOverPanel != null) gameOverPanel.SetActive(false);
-        if (continueBtnText != null) continueBtnText.text = "Continue";
+        SetGameOverButtonLabels(false);
     }
 
     private void Start()
     {
+        if (mainMenuBtn == null && mainMenuBtnRect != null) mainMenuBtn = mainMenuBtnRect.GetComponent<Button>();
+        if (continueBtn == null && continueBtnRect != null) continueBtn = continueBtnRect.GetComponent<Button>();
+        if (mainMenuBtnText == null && mainMenuBtn != null) mainMenuBtnText = mainMenuBtn.GetComponentInChildren<TextMeshProUGUI>();
+        if (continueBtnText == null && continueBtn != null) continueBtnText = continueBtn.GetComponentInChildren<TextMeshProUGUI>();
+
+        if (mainMenuBtn != null) mainMenuBtn.onClick.AddListener(OnMainMenuButtonClicked);
+        if (continueBtn != null) continueBtn.onClick.AddListener(OnContinueButtonClicked);
+
+        if (SoundManager.Instance != null)
+        {
+            SoundManager.Instance.PlayInGameBGM();
+        }
+
         StartCoroutine(StartGameCountdown());
     }
 
@@ -116,7 +139,11 @@ public class GameOverManager : MonoBehaviour
 
         if (!isGameStarted || isGameFinished)
         {
-            if (isGameFinished) HandleGameOverInput();
+            if (isGameFinished)
+            {
+                ApplyVisualFeedback();
+                HandleGameOverInput();
+            }
             return;
         }
 
@@ -135,6 +162,17 @@ public class GameOverManager : MonoBehaviour
         }
     }
 
+    private void ApplyVisualFeedback()
+    {
+        Vector3 mainMenuTargetScale = (selectedGameOverIndex == 0) ? (mainMenuInitialScale * selectedScaleMultiplier) : mainMenuInitialScale;
+        Vector3 continueTargetScale = (selectedGameOverIndex == 1) ? (continueInitialScale * selectedScaleMultiplier) : continueInitialScale;
+
+        if (mainMenuBtnRect != null)
+            mainMenuBtnRect.localScale = Vector3.Lerp(mainMenuBtnRect.localScale, mainMenuTargetScale, Time.deltaTime * 10f);
+        if (continueBtnRect != null)
+            continueBtnRect.localScale = Vector3.Lerp(continueBtnRect.localScale, continueTargetScale, Time.deltaTime * 10f);
+    }
+
     private void HandleGameOverInput()
     {
         if (UnityEngine.InputSystem.Keyboard.current == null) return;
@@ -148,22 +186,17 @@ public class GameOverManager : MonoBehaviour
             selectedGameOverIndex = 1;
         }
 
-        if (mainMenuBtnRect != null)
-            mainMenuBtnRect.localScale = Vector3.Lerp(mainMenuBtnRect.localScale, Vector3.one * (selectedGameOverIndex == 0 ? selectedScale : normalScale), Time.deltaTime * 10f);
-        if (continueBtnRect != null)
-            continueBtnRect.localScale = Vector3.Lerp(continueBtnRect.localScale, Vector3.one * (selectedGameOverIndex == 1 ? selectedScale : normalScale), Time.deltaTime * 10f);
-
         if (UnityEngine.InputSystem.Keyboard.current.enterKey.wasPressedThisFrame)
         {
-            if (selectedGameOverIndex == 0) StartCoroutine(LoadSceneRoutine(mainMenuSceneName, mainMenuBtnImage));
-            else StartCoroutine(LoadSceneRoutine(nextSceneName, continueBtnImage));
+            ActivateSelectedButton();
         }
     }
 
     private void OnMove()
     {
-        selectedGameOverIndex = (selectedGameOverIndex == 0) ? 1 : 0;
-        Debug.Log("Selected: " + (selectedGameOverIndex == 0 ? "Play" : "Exit"));
+        if (selectedGameOverIndex == -1) selectedGameOverIndex = 1;
+        else selectedGameOverIndex = (selectedGameOverIndex == 0) ? 1 : 0;
+        Debug.Log("Selected: " + (selectedGameOverIndex == 0 ? "Main Menu" : "Continue"));
     }
 
     private IEnumerator LoadSceneRoutine(string sceneName, Image buttonImage)
@@ -186,6 +219,12 @@ public class GameOverManager : MonoBehaviour
     {
         if (isGameFinished) return;
         isGameFinished = true;
+        isWin = false;
+
+        if (SoundManager.Instance != null)
+        {
+            SoundManager.Instance.PlayDeadSFX();
+        }
 
         ShowGameOverUI("Ship Crashed!");
     }
@@ -193,6 +232,13 @@ public class GameOverManager : MonoBehaviour
     private void Win()
     {
         isGameFinished = true;
+        isWin = true;
+
+        if (SoundManager.Instance != null)
+        {
+            SoundManager.Instance.PlayWinSFX();
+        }
+
         StartCoroutine(WinTransitionRoutine());
     }
 
@@ -228,12 +274,30 @@ public class GameOverManager : MonoBehaviour
 
     private void ShowGameOverUI(string message)
     {
+        DisableDynamicTouchControllers();
+        SetGameOverButtonLabels(isWin);
+
         if (gameOverPanel != null) gameOverPanel.SetActive(true);
         if (gameOverText != null) gameOverText.text = message;
         
         StopAllAnimations();
         
         Debug.Log("Game Finished: " + message);
+    }
+
+    private void SetGameOverButtonLabels(bool win)
+    {
+        if (mainMenuBtnText != null) mainMenuBtnText.text = "Back to Main Menu";
+        if (continueBtnText != null) continueBtnText.text = win ? "Continue" : "Retry";
+    }
+
+    private void DisableDynamicTouchControllers()
+    {
+        DynamicTouchController[] touchControllers = Object.FindObjectsByType<DynamicTouchController>(FindObjectsSortMode.None);
+        foreach (DynamicTouchController touchController in touchControllers)
+        {
+            touchController.enabled = false;
+        }
     }
 
     private void StopAllAnimations()
@@ -248,5 +312,80 @@ public class GameOverManager : MonoBehaviour
     public float GetRemainingTime()
     {
         return Mathf.Max(0, survivalGoalTime - currentTimer);
+    }
+
+    private void OnEnable()
+    {
+        if (InputManager.Instance != null)
+        {
+            InputManager.Instance.OnMove += OnMove;
+            InputManager.Instance.OnConfirm += OnConfirm;
+        }
+    }
+
+    private void OnDisable()
+    {
+        if (InputManager.Instance != null)
+        {
+            InputManager.Instance.OnMove -= OnMove;
+            InputManager.Instance.OnConfirm -= OnConfirm;
+        }
+    }
+
+    private void OnConfirm()
+    {
+        if (!isGameFinished || isTransitioning || selectedGameOverIndex == -1) return;
+
+        ActivateSelectedButton();
+    }
+
+    private void ActivateSelectedButton()
+    {
+        if (selectedGameOverIndex == 0)
+        {
+            StartCoroutine(LoadSceneRoutine(mainMenuSceneName, mainMenuBtnImage));
+        }
+        else if (isWin)
+        {
+            StartCoroutine(LoadSceneRoutine(nextSceneName, continueBtnImage));
+        }
+        else
+        {
+            StartCoroutine(LoadSceneRoutine(SceneManager.GetActiveScene().name, continueBtnImage));
+        }
+    }
+
+    public void OnMainMenuButtonClicked()
+    {
+        if (isTransitioning) return;
+        if (SoundManager.Instance != null) SoundManager.Instance.PlayTouchSFX();
+        selectedGameOverIndex = 0;
+        StartCoroutine(LoadSceneRoutine(mainMenuSceneName, mainMenuBtnImage));
+    }
+
+    public void OnContinueButtonClicked()
+    {
+        if (isTransitioning) return;
+        if (SoundManager.Instance != null) SoundManager.Instance.PlayTouchSFX();
+        selectedGameOverIndex = 1;
+        ActivateSelectedButton();
+    }
+
+    public void OnRetryButtonClicked()
+    {
+        if (isTransitioning || isWin) return;
+        if (SoundManager.Instance != null) SoundManager.Instance.PlayTouchSFX();
+        selectedGameOverIndex = 1;
+        ActivateSelectedButton();
+    }
+
+    public void SelectMainMenu()
+    {
+        if (!isTransitioning) selectedGameOverIndex = 0;
+    }
+
+    public void SelectContinue()
+    {
+        if (!isTransitioning) selectedGameOverIndex = 1;
     }
 }
